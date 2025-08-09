@@ -472,6 +472,90 @@
             box-shadow: 0 20px 45px rgba(79, 172, 254, 0.6);
         }
 
+        .exit-button {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            background: linear-gradient(135deg, #ff4757 0%, #ff3838 100%);
+            border: none;
+            border-radius: 15px;
+            padding: 12px 20px;
+            color: white;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            box-shadow: 0 8px 25px rgba(255, 71, 87, 0.4);
+            display: none;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .exit-button:hover {
+            transform: translateY(-2px) scale(1.05);
+            box-shadow: 0 12px 35px rgba(255, 71, 87, 0.6);
+        }
+
+        .share-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 2000;
+        }
+
+        .share-modal-content {
+            background: #111111;
+            border-radius: 20px;
+            padding: 30px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            max-width: 500px;
+            width: 90%;
+            text-align: center;
+        }
+
+        .share-options {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            justify-content: center;
+            margin-top: 20px;
+        }
+
+        .share-option {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            border-radius: 15px;
+            padding: 15px 20px;
+            color: white;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            min-width: 120px;
+        }
+
+        .share-option:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4);
+        }
+
+        .close-modal {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            background: none;
+            border: none;
+            color: white;
+            font-size: 24px;
+            cursor: pointer;
+        }
+
         @media (max-width: 768px) {
             .chat-interface {
                 height: 100vh;
@@ -516,6 +600,38 @@
         </div>
     </div>
 
+    <!-- Exit Button -->
+    <button class="exit-button" id="exitButton" onclick="exitChat()">
+        <i class="fas fa-sign-out-alt"></i>
+        Exit Chat
+    </button>
+
+    <!-- Share Modal -->
+    <div class="share-modal" id="shareModal">
+        <div class="share-modal-content">
+            <button class="close-modal" onclick="closeShareModal()">&times;</button>
+            <h2 style="color: white; margin-bottom: 20px;">Share Chat Room</h2>
+            <div class="join-link" id="shareLink" style="margin-bottom: 20px;"></div>
+            <div class="share-options">
+                <button class="share-option" onclick="shareViaWhatsApp()">
+                    <i class="fab fa-whatsapp"></i> WhatsApp
+                </button>
+                <button class="share-option" onclick="shareViaTelegram()">
+                    <i class="fab fa-telegram"></i> Telegram
+                </button>
+                <button class="share-option" onclick="shareViaEmail()">
+                    <i class="fas fa-envelope"></i> Email
+                </button>
+                <button class="share-option" onclick="shareViaSMS()">
+                    <i class="fas fa-sms"></i> SMS
+                </button>
+                <button class="share-option" onclick="copyShareLink()">
+                    <i class="fas fa-copy"></i> Copy Link
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- Join Link Section -->
     <div class="join-section" id="joinSection" style="display: none;">
         <h3 style="color: white; font-size: 0.875rem; font-weight: 600; margin-bottom: 0.75rem;">
@@ -527,9 +643,9 @@
             <i class="fas fa-copy" style="margin-right: 0.25rem;"></i>
             Copy Link
         </button>
-        <button class="share-button" onclick="shareJoinLink()">
+        <button class="share-button" onclick="openShareModal()">
             <i class="fas fa-share" style="margin-right: 0.25rem;"></i>
-            Share
+            Share Chat
         </button>
         <div class="participants-count" style="margin-top: 0.75rem;">
             <i class="fas fa-users"></i>
@@ -709,12 +825,13 @@
         function handleChatUpdate(data) {
             if (!data || !data.participants) return;
             
-            const oldParticipantCount = participants.size;
+            const oldParticipants = new Set(participants);
             const oldMessageCount = messageHistory.length;
             
             // Check for new participants
             const newParticipants = new Set(data.participants);
-            const joinedMembers = [...newParticipants].filter(member => !participants.has(member));
+            const joinedMembers = [...newParticipants].filter(member => !oldParticipants.has(member));
+            const leftMembers = [...oldParticipants].filter(member => !newParticipants.has(member));
             
             participants = newParticipants;
             
@@ -722,6 +839,13 @@
             joinedMembers.forEach(member => {
                 if (member !== currentUser) {
                     addSystemMessage(`${member} joined the chat`, false);
+                }
+            });
+            
+            // Show leave notifications for departed members
+            leftMembers.forEach(member => {
+                if (member !== currentUser) {
+                    addSystemMessage(`${member} left the chat`, false);
                 }
             });
             
@@ -808,6 +932,7 @@
                 document.getElementById('welcomeScreen').style.display = 'none';
                 document.getElementById('chatContainer').style.display = 'flex';
                 document.getElementById('joinSection').style.display = 'block';
+                document.getElementById('exitButton').style.display = 'flex';
             }, 500);
 
             // Update join link
@@ -856,18 +981,73 @@
             });
         }
 
-        // Share join link
-        function shareJoinLink() {
-            const joinLink = document.getElementById('joinLink').textContent;
-            if (navigator.share) {
-                navigator.share({
-                    title: 'Join SecureChat 3D',
-                    text: 'Join our encrypted group chat!',
-                    url: joinLink
-                });
-            } else {
-                copyJoinLink();
+        // Exit chat function
+        function exitChat() {
+            if (confirm('Are you sure you want to exit the chat?')) {
+                // Remove user from participants
+                participants.delete(currentUser);
+                
+                // Add leave message
+                addSystemMessage(`${currentUser} left the chat`);
+                
+                // Reset and go back to welcome screen
+                location.reload();
             }
+        }
+
+        // Open share modal
+        function openShareModal() {
+            const shareLink = document.getElementById('shareLink');
+            const joinLink = document.getElementById('joinLink').textContent;
+            shareLink.textContent = joinLink;
+            document.getElementById('shareModal').style.display = 'flex';
+        }
+
+        // Close share modal
+        function closeShareModal() {
+            document.getElementById('shareModal').style.display = 'none';
+        }
+
+        // Share via WhatsApp
+        function shareViaWhatsApp() {
+            const link = document.getElementById('joinLink').textContent;
+            const text = `Join our secure encrypted chat room!\n\n${link}`;
+            window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+        }
+
+        // Share via Telegram
+        function shareViaTelegram() {
+            const link = document.getElementById('joinLink').textContent;
+            const text = `Join our secure encrypted chat room! ${link}`;
+            window.open(`https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(text)}`, '_blank');
+        }
+
+        // Share via Email
+        function shareViaEmail() {
+            const link = document.getElementById('joinLink').textContent;
+            const subject = 'Join SecureChat 3D - Encrypted Group Chat';
+            const body = `Hi!\n\nYou're invited to join our secure encrypted chat room.\n\nClick here to join: ${link}\n\nSee you there!`;
+            window.open(`mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`);
+        }
+
+        // Share via SMS
+        function shareViaSMS() {
+            const link = document.getElementById('joinLink').textContent;
+            const text = `Join our secure chat: ${link}`;
+            window.open(`sms:?body=${encodeURIComponent(text)}`);
+        }
+
+        // Copy share link
+        function copyShareLink() {
+            const link = document.getElementById('joinLink').textContent;
+            navigator.clipboard.writeText(link).then(() => {
+                alert('Link copied to clipboard!');
+            });
+        }
+
+        // Legacy share function (keep for compatibility)
+        function shareJoinLink() {
+            openShareModal();
         }
 
         // Update participant count and member list
@@ -1081,4 +1261,6 @@
     </script>
 </body>
 </html>
+
+
 
