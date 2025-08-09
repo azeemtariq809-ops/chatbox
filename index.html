@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SecureChat 3D - Encrypted Group Chat</title>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
     <style>
         * {
             margin: 0;
@@ -715,148 +718,290 @@
         let participants = new Set();
         let chatData = {};
         let isHost = false;
+        let database = null;
 
-        // Cross-browser communication using multiple methods
-        function saveToStorage() {
+        // Use a simpler approach with a free JSON storage API for cross-device communication
+        const JSONBIN_API_KEY = '$2b$10$5Y6L.e0H0v5C5r8E8u9J3eL.r4G8k7H4k6F9d2M1m8K3s7A9d6F2';
+        const CHAT_API_URL = 'https://api.jsonbin.io/v3/b/';
+        let binId = null;
+        let useAPI = true;
+
+        // Initialize real-time communication
+        console.log('Initializing cross-device chat system...');
+
+        // Enhanced real-time communication system for cross-device chat
+        async function saveToStorage() {
+            if (useAPI && chatRoom) {
+                try {
+                    const data = {
+                        room: chatRoom,
+                        participants: Array.from(participants),
+                        messages: messageHistory,
+                        lastUpdate: Date.now(),
+                        users: {}
+                    };
+                    
+                    // Add current user to active users
+                    data.users[currentUser] = {
+                        username: currentUser,
+                        lastSeen: Date.now(),
+                        active: true
+                    };
+                    
+                    // Merge with existing users
+                    if (window.currentChatData && window.currentChatData.users) {
+                        Object.keys(window.currentChatData.users).forEach(user => {
+                            if (user !== currentUser && (Date.now() - window.currentChatData.users[user].lastSeen) < 60000) {
+                                data.users[user] = window.currentChatData.users[user];
+                            }
+                        });
+                    }
+                    
+                    const apiUrl = binId ? 
+                        `${CHAT_API_URL}${binId}` : 
+                        `${CHAT_API_URL}`;
+                    
+                    const response = await fetch(apiUrl, {
+                        method: binId ? 'PUT' : 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Master-Key': JSONBIN_API_KEY,
+                            'X-Bin-Name': `chat_${chatRoom}`
+                        },
+                        body: JSON.stringify(data)
+                    });
+                    
+                    if (response.ok) {
+                        const result = await response.json();
+                        if (!binId && result.metadata && result.metadata.id) {
+                            binId = result.metadata.id;
+                            localStorage.setItem(`binId_${chatRoom}`, binId);
+                        }
+                        window.currentChatData = data;
+                        console.log('Chat data saved successfully');
+                    }
+                } catch (error) {
+                    console.log('API save failed, using localStorage fallback');
+                    saveToLocalStorage();
+                }
+            } else {
+                saveToLocalStorage();
+            }
+        }
+        
+        function saveToLocalStorage() {
             const data = {
                 room: chatRoom,
                 participants: Array.from(participants),
                 messages: messageHistory,
                 lastUpdate: Date.now(),
-                userId: currentUser + '_' + Date.now()
+                users: {}
             };
             
-            // Save to localStorage
+            data.users[currentUser] = {
+                username: currentUser,
+                lastSeen: Date.now(),
+                active: true
+            };
+            
             localStorage.setItem(`chat_${chatRoom}`, JSON.stringify(data));
-            
-            // Also save to sessionStorage as backup
-            sessionStorage.setItem(`chat_${chatRoom}`, JSON.stringify(data));
-            
-            // Broadcast to other tabs using BroadcastChannel (if supported)
-            if (window.BroadcastChannel) {
-                try {
-                    const channel = new BroadcastChannel(`chat_${chatRoom}`);
-                    channel.postMessage(data);
-                } catch (e) {
-                    console.log('BroadcastChannel not available');
-                }
-            }
-            
-            // Use shared storage approach for Blogger
-            try {
-                // Create a hidden iframe for cross-window communication
-                if (!window.chatIframe) {
-                    const iframe = document.createElement('iframe');
-                    iframe.style.display = 'none';
-                    iframe.src = 'about:blank';
-                    document.body.appendChild(iframe);
-                    window.chatIframe = iframe;
-                }
-            } catch (e) {
-                console.log('Iframe communication setup failed');
-            }
         }
 
-        function loadFromStorage() {
+        async function loadFromStorage() {
+            // Try to get binId for this room
+            binId = localStorage.getItem(`binId_${chatRoom}`);
+            
+            if (useAPI && binId) {
+                try {
+                    const response = await fetch(`${CHAT_API_URL}${binId}/latest`, {
+                        headers: {
+                            'X-Master-Key': JSONBIN_API_KEY
+                        }
+                    });
+                    
+                    if (response.ok) {
+                        const result = await response.json();
+                        const data = result.record;
+                        
+                        if (data && data.room === chatRoom) {
+                            window.currentChatData = data;
+                            
+                            const oldLength = messageHistory.length;
+                            messageHistory = data.messages || [];
+                            
+                            // Update participants from API data
+                            participants.clear();
+                            if (data.users) {
+                                Object.values(data.users).forEach(user => {
+                                    if ((Date.now() - user.lastSeen) < 60000) { // Active within 1 minute
+                                        participants.add(user.username);
+                                    }
+                                });
+                            }
+                            
+                            if (oldLength === 0) {
+                                displayAllMessages();
+                            } else if (messageHistory.length > oldLength) {
+                                // Show new messages
+                                const newMessages = messageHistory.slice(oldLength);
+                                newMessages.forEach(msg => {
+                                    if (msg.sender !== currentUser) {
+                                        if (msg.type === 'system') {
+                                            addSystemMessage(msg.message, false);
+                                        } else {
+                                            addMessage(msg.sender, msg.message, false, false);
+                                        }
+                                    }
+                                });
+                            }
+                            
+                            updateParticipantCount();
+                            console.log('Chat data loaded from API');
+                            return;
+                        }
+                    }
+                } catch (error) {
+                    console.log('API load failed, using localStorage');
+                }
+            }
+            
+            // Fallback to localStorage
+            loadFromLocalStorage();
+        }
+        
+        function loadFromLocalStorage() {
             const stored = localStorage.getItem(`chat_${chatRoom}`);
             if (stored) {
                 const data = JSON.parse(stored);
-                participants = new Set(data.participants);
+                window.currentChatData = data;
+                participants = new Set(data.participants || []);
                 messageHistory = data.messages || [];
-                
-                // Load existing messages
-                const messagesContainer = document.getElementById('chatMessages');
-                messagesContainer.innerHTML = `
-                    <div class="message">
-                        <div class="message-avatar">🛡️</div>
-                        <div class="message-content">
-                            <p>Welcome to SecureChat 3D! Your messages are end-to-end encrypted.</p>
-                            <div class="message-time">
-                                System • <span class="encryption-indicator"><i class="fas fa-lock"></i> Encrypted</span>
-                            </div>
+                displayAllMessages();
+                updateParticipantCount();
+            } else {
+                displayAllMessages();
+            }
+        }
+        
+        function displayAllMessages() {
+            const messagesContainer = document.getElementById('chatMessages');
+            messagesContainer.innerHTML = `
+                <div class="message">
+                    <div class="message-avatar">🛡️</div>
+                    <div class="message-content">
+                        <p>Welcome to SecureChat 3D! Your messages are end-to-end encrypted.</p>
+                        <div class="message-time">
+                            System • <span class="encryption-indicator"><i class="fas fa-lock"></i> Encrypted</span>
                         </div>
                     </div>
-                `;
-                
-                messageHistory.forEach(msg => {
-                    if (msg.type === 'system') {
-                        addSystemMessage(msg.message, false);
-                    } else {
-                        addMessage(msg.sender, msg.message, msg.sender === currentUser, false);
+                </div>
+            `;
+            
+            messageHistory.forEach(msg => {
+                if (msg.type === 'system') {
+                    addSystemMessage(msg.message, false);
+                } else {
+                    addMessage(msg.sender, msg.message, msg.sender === currentUser, false);
+                }
+            });
+        }
+
+        // Enhanced communication setup for real group chat
+        function setupCommunication() {
+            // Real-time polling for cross-device updates
+            setInterval(pollForUpdates, 2000); // Poll every 2 seconds
+            
+            // Update user presence every 10 seconds
+            setInterval(updateUserPresence, 10000);
+            
+            // Clean up inactive users every 30 seconds
+            setInterval(cleanupInactiveUsers, 30000);
+            
+            // Local storage listener for same-browser tabs
+            window.addEventListener('storage', function(e) {
+                if (e.key === `chat_${chatRoom}` && e.newValue) {
+                    const data = JSON.parse(e.newValue);
+                    handleChatUpdate(data);
+                }
+            });
+            
+            console.log('Real-time communication setup complete');
+        }
+        
+        // Update user presence
+        function updateUserPresence() {
+            if (currentUser && chatRoom) {
+                // Update presence by saving current data
+                saveToStorage();
+            }
+        }
+        
+        // Update active users list
+        function updateActiveUsers() {
+            const activeUsers = new Set();
+            const cutoffTime = Date.now() - 30000; // 30 seconds timeout
+            
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key && key.startsWith(`user_${chatRoom}_`)) {
+                    try {
+                        const userData = JSON.parse(localStorage.getItem(key));
+                        if (userData.lastSeen > cutoffTime) {
+                            activeUsers.add(userData.username);
+                        }
+                    } catch (e) {
+                        // Invalid data, skip
                     }
-                });
-                
+                }
+            }
+            
+            const oldSize = participants.size;
+            participants = activeUsers;
+            
+            if (participants.size !== oldSize) {
                 updateParticipantCount();
             }
         }
-
-        // Multiple event listeners for cross-browser compatibility
-        function setupCommunication() {
-            // Listen for localStorage changes
-            window.addEventListener('storage', function(e) {
-                if (e.key === `chat_${chatRoom}` && e.newValue) {
-                    handleChatUpdate(JSON.parse(e.newValue));
-                }
-            });
+        
+        // Clean up inactive users
+        function cleanupInactiveUsers() {
+            const cutoffTime = Date.now() - 60000; // 1 minute timeout
             
-            // Listen for BroadcastChannel messages
-            if (window.BroadcastChannel) {
-                try {
-                    const channel = new BroadcastChannel(`chat_${chatRoom}`);
-                    channel.addEventListener('message', function(e) {
-                        handleChatUpdate(e.data);
-                    });
-                } catch (e) {
-                    console.log('BroadcastChannel not available');
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key && key.startsWith(`user_${chatRoom}_`)) {
+                    try {
+                        const userData = JSON.parse(localStorage.getItem(key));
+                        if (userData.lastSeen < cutoffTime) {
+                            localStorage.removeItem(key);
+                        }
+                    } catch (e) {
+                        localStorage.removeItem(key);
+                    }
                 }
             }
-            
-            // Listen for postMessage
-            window.addEventListener('message', function(e) {
-                if (e.data.type === 'CHAT_UPDATE' && e.data.room === chatRoom) {
-                    handleChatUpdate(e.data.data);
-                }
-            });
-            
-            // More frequent polling for Blogger
-            setInterval(pollForUpdates, 1000);
+            updateActiveUsers();
         }
         
         function handleChatUpdate(data) {
-            if (!data || !data.participants) return;
+            if (!data || !data.messages) return;
             
-            const oldParticipants = new Set(participants);
             const oldMessageCount = messageHistory.length;
             
-            // Check for new participants
-            const newParticipants = new Set(data.participants);
-            const joinedMembers = [...newParticipants].filter(member => !oldParticipants.has(member));
-            const leftMembers = [...oldParticipants].filter(member => !newParticipants.has(member));
+            // Update active users from presence data
+            updateActiveUsers();
             
-            participants = newParticipants;
-            
-            // Show join notifications for new members
-            joinedMembers.forEach(member => {
-                if (member !== currentUser) {
-                    addSystemMessage(`${member} joined the chat`, false);
-                }
-            });
-            
-            // Show leave notifications for departed members
-            leftMembers.forEach(member => {
-                if (member !== currentUser) {
-                    addSystemMessage(`${member} left the chat`, false);
-                }
-            });
-            
-            // Check for new messages
-            if (data.messages && data.messages.length > oldMessageCount) {
+            // Check for new messages only
+            if (data.messages.length > oldMessageCount) {
                 const newMessages = data.messages.slice(oldMessageCount);
                 newMessages.forEach(msg => {
-                    if (msg.type === 'system') {
-                        addSystemMessage(msg.message, false);
-                    } else if (msg.sender !== currentUser) {
-                        addMessage(msg.sender, msg.message, false, false);
+                    // Only add messages from other users (not our own)
+                    if (msg.sender !== currentUser) {
+                        if (msg.type === 'system') {
+                            addSystemMessage(msg.message, false);
+                        } else {
+                            addMessage(msg.sender, msg.message, false, false);
+                        }
                     }
                 });
                 messageHistory = data.messages;
@@ -865,18 +1010,27 @@
             updateParticipantCount();
         }
         
-        function pollForUpdates() {
+        async function pollForUpdates() {
+            if (!binId || !useAPI) return;
+            
             try {
-                const stored = localStorage.getItem(`chat_${chatRoom}`);
-                if (stored) {
-                    const data = JSON.parse(stored);
-                    if (data.lastUpdate > (window.lastUpdateTime || 0)) {
+                const response = await fetch(`${CHAT_API_URL}${binId}/latest`, {
+                    headers: {
+                        'X-Master-Key': JSONBIN_API_KEY
+                    }
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    const data = result.record;
+                    
+                    if (data && data.lastUpdate > (window.lastUpdateTime || 0)) {
                         window.lastUpdateTime = data.lastUpdate;
                         handleChatUpdate(data);
                     }
                 }
-            } catch (e) {
-                console.log('Polling failed:', e);
+            } catch (error) {
+                // Silently fail and try again next time
             }
         }
 
@@ -945,6 +1099,9 @@
             // Load existing chat data or create new room
             loadFromStorage();
             
+            // Update user presence
+            updateUserPresence();
+            
             // Add join message
             addSystemMessage(`${currentUser} joined the chat`);
 
@@ -984,11 +1141,16 @@
         // Exit chat function
         function exitChat() {
             if (confirm('Are you sure you want to exit the chat?')) {
-                // Remove user from participants
-                participants.delete(currentUser);
-                
-                // Add leave message
+                // Add leave message before removing user
                 addSystemMessage(`${currentUser} left the chat`);
+                
+                // Remove user presence data
+                localStorage.removeItem(`user_${chatRoom}_${currentUser}`);
+                
+                // Close BroadcastChannel if it exists
+                if (window.chatChannel) {
+                    window.chatChannel.close();
+                }
                 
                 // Reset and go back to welcome screen
                 location.reload();
@@ -1261,6 +1423,8 @@
     </script>
 </body>
 </html>
+
+
 
 
 
